@@ -18,6 +18,8 @@ def _setup():
     os.environ["DATABASE_URL"] = URL
     import psycopg
     with psycopg.connect(URL, autocommit=True) as c:
+        c.execute("DROP MATERIALIZED VIEW IF EXISTS trex_events_daily CASCADE")
+        c.execute("DROP TABLE IF EXISTS trex_events CASCADE")      # a hypertable must be dropped on its own
         c.execute("DROP TABLE IF EXISTS trex_rows, trex_runs, trex_papers CASCADE")
     from app import db
     db._schema_ready.clear()
@@ -93,6 +95,68 @@ def test_bad_url_never_breaks_extraction():
         rows = process_paper(pdf, ["Model", "Accuracy"])
     assert len(rows) == 1 and "database" in log.getvalue()
     assert not db.check()["ok"]
+
+
+def _fake_extract_and_two_runs():
+    import app.extractor as ex
+    from app.pipeline import process_paper
+    tmp = Path(tempfile.mkdtemp())
+    pdf = tmp / "resnet.pdf"
+    _make_pdf(pdf, ["Table 2: ResNet-110 has 6.43% error on CIFAR-10."])
+    ex.complete = lambda s, u: json.dumps({"results": [
+        {"Model": "ResNet-110", "Dataset": "CIFAR-10", "Accuracy": "6.43% error",
+         "quote": "ResNet-110 has 6.43% error on CIFAR-10", "page": 1},
+        {"Model": "ViT", "Dataset": "CIFAR-10", "Accuracy": "99.5%", "quote": "invented quote", "page": 1}]})
+    fields = ["Model", "Dataset", "Accuracy"]
+    process_paper(pdf, fields)          # fresh: 1 AI call
+    process_paper(pdf, fields)          # cache hit: saves 1 call
+    process_paper(pdf, fields)          # cache hit again
+
+
+def test_activity_log_with_timescale():
+    _setup()
+    os.environ.pop("TREX_DISABLE_TIMESCALE", None)
+    from app import db
+    _fake_extract_and_two_runs()
+    feats = db.timescale_features()
+    if not feats["version"]:
+        print("  (TimescaleDB not installed here: checked the fallback only)")
+    else:
+        assert feats["hypertable"] and feats["continuous_aggregate"] and feats["compression"], feats
+    recent = db.recent_activity()
+    assert len(recent) == 1 and recent[0]["kind"] == "cache_hit" and recent[0]["verified"] == 1
+    day = db.daily_activity()[-1]
+    assert (day["fresh_runs"], day["cache_hits"], day["ai_calls"], day["calls_saved"]) == (1, 2, 1, 2), day
+    assert (day["rows"], day["verified"], day["unverified"]) == (6, 3, 3), day
+
+
+def test_activity_log_fallback_without_timescale():
+    _setup()
+    os.environ["TREX_DISABLE_TIMESCALE"] = "1"
+    try:
+        from app import db
+        _fake_extract_and_two_runs()
+        day = db.daily_activity()[-1]
+        assert (day["fresh_runs"], day["cache_hits"], day["calls_saved"]) == (1, 2, 2), day
+        assert not db.timescale_features()["hypertable"]
+    finally:
+        os.environ.pop("TREX_DISABLE_TIMESCALE", None)
+
+
+def test_history_moves_reopened_run_to_top():
+    _setup()
+    os.environ.pop("TREX_DISABLE_TIMESCALE", None)
+    from app import db
+    _fake_extract_and_two_runs()
+    first = db.history()[0]["run_id"]
+    tmp = Path(tempfile.mkdtemp()); pdf = tmp / "other.pdf"
+    _make_pdf(pdf, ["Another paper."])
+    other = db.save_run(db.file_sha256(pdf), "other.pdf", "Other", 1, ["Model"], [])
+    assert [h["run_id"] for h in db.history()] == [other, first]
+    db.log_event("reopen", [], run_id=first)
+    assert [h["run_id"] for h in db.history()] == [first, other]
+    day = db.daily_activity()[-1]  # reopens don't inflate the totals
+    assert (day["fresh_runs"], day["cache_hits"], day["rows"]) == (1, 2, 6), day
 
 
 if __name__ == "__main__":

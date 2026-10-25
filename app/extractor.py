@@ -25,6 +25,7 @@ Return ONLY one JSON object, no prose, no markdown fences:
   "tables": [
     {
       "page": <int, from the nearest "=== PAGE N ===" marker above the table>,
+      "setting": "<table number + what makes this table different, <= 15 words, e.g. 'Table 3: true θ = (0.5, 0.5, 2, 2, 1)' or 'Table 1: test problem TP-1A, constant diffusion'>",
       "column_field": "<which requested field the column headers fill, e.g. Model>",
       "row_field": "<which requested field the row labels fill, e.g. Benchmark>",
       "value_field": "<which requested field the cell values fill, e.g. Score>",
@@ -37,7 +38,8 @@ Return ONLY one JSON object, no prose, no markdown fences:
     }
   ],
   "results": [
-    {"<each requested field>": "<value or null>", "quote": "<verbatim span, <= 25 words>", "page": <int>}
+    {"<each requested field>": "<value or null>", "quote": "<verbatim span, <= 25 words>", "page": <int>,
+     "setting": "<condition this result is under, if the sentence states one, else null>"}
   ]
 }
 
@@ -49,6 +51,8 @@ Rules:
 - Copy values EXACTLY as written. Do not convert units, compute complements, or round.
 - Column headers are often split across lines (e.g. "Claude\\nSonnet 4"): join them into one clean name.
   Skip group headers like "Open Source" / "Proprietary" that span several columns.
+- "setting" tells apart tables that repeat the same rows under different conditions (different true
+  parameters, test problems, datasets, sample sizes). Take it from the caption or table header.
 - Use "results" only for numbers stated in sentences (e.g. "achieves 79.8% on AIME 2024").
 - SKIP charts and figures (bar charts, plots, radar charts). Their text comes out of the PDF scrambled,
   so you can't tell which number belongs to which bar. Only use tables and sentences.
@@ -224,6 +228,9 @@ def expand_table(t: dict, fields: list[str]) -> list[dict]:
             row[value_f] = val
             row["quote"] = _clean(r.get("quote")) or _clean(f"{r.get('label', '')} {' '.join(map(str, values))}")
             row["page"] = page
+            setting = _clean(t.get("setting") or t.get("caption"))
+            if setting:
+                row["setting"] = setting
             if not aligned:
                 # value count didn't match the header: column assignment may be off
                 row["alignment"] = "uncertain"
@@ -291,7 +298,7 @@ def _dedupe(rows: list[dict], fields: list[str]) -> list[dict]:
     so the pipeline can keep the copy that verifies best."""
     seen, out = set(), []
     for r in rows:
-        key = tuple(_clean(r.get(f)).lower() for f in fields) + (r.get("page"),)
+        key = tuple(_clean(r.get(f)).lower() for f in fields) + (r.get("page"), _clean(r.get("setting")).lower())
         if key not in seen:
             seen.add(key)
             out.append(r)
@@ -320,7 +327,7 @@ def _warn(msg: str) -> None:
 
 def extract(fields: list[str], pages: list[Page], max_chars: int = 180_000,
             pages_per_call: int = PAGES_PER_CALL, workers: int = 4, label: str = "",
-            on_progress=None, max_calls: int | None = None) -> list[dict]:
+            on_progress=None, max_calls: int | None = None, stats: dict | None = None) -> list[dict]:
     """Extract rows chunk by chunk (in parallel), then merge and remove duplicates.
 
     on_progress(done, total, pages_text) is called after each chunk finishes, from the calling
@@ -351,6 +358,8 @@ def extract(fields: list[str], pages: list[Page], max_chars: int = 180_000,
         chunks = [chunks[i] for i in sorted(keep)]
         _warn(f"limit: read the {max_calls} most table-heavy parts of this paper, skipped {skipped} "
               f"(public demo limit)")
+    if stats is not None:
+        stats["ai_calls"] = len(chunks)
     results: list[list[dict]] = [[] for _ in chunks]
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(run, c): i for i, c in enumerate(chunks)}

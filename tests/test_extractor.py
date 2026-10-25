@@ -192,6 +192,31 @@ def test_timeout_is_retried_once_then_raised():
     assert calls["n"] == 2
 
 
+def test_max_calls_keeps_most_table_heavy_parts_in_page_order():
+    import io, contextlib, json as _j, re as _re
+    import app.extractor as ex
+    dense = lambda n, k: Page(n, " ".join(f"{i}.5" for i in range(k)) + f" PAGE{n}")
+    pages = [dense(1, 50), dense(2, 200), dense(3, 45), dense(4, 300)]      # each its own part
+    ex.complete = lambda s, u: _j.dumps({"results": [{"Model": "M" + _re.search(r"PAGE(\d)", u).group(1),
+                                                      "Benchmark": "B", "Score": "1.0", "quote": "q", "page": 1}]})
+    log = io.StringIO()
+    with contextlib.redirect_stderr(log):
+        rows = ex.extract(FIELDS, pages, max_calls=2)
+    assert [r["Model"] for r in rows] == ["M2", "M4"], rows      # the two densest, in page order
+    assert "skipped 2" in log.getvalue()
+
+
+def test_table_setting_is_attached_and_keeps_rows_apart():
+    from app.pipeline import keep_best_copies
+    t3 = dict(TABLE, setting="Table 3: TP-1A, constant diffusion")
+    t4 = dict(TABLE, setting="Table 4: TP-2B, high frequency")
+    rows = expand_table(t3, FIELDS) + expand_table(t4, FIELDS)
+    assert rows[0]["setting"] == "Table 3: TP-1A, constant diffusion"
+    for r in rows:
+        r["status"] = "verified"
+    assert len(keep_best_copies(rows, FIELDS)) == 10, "identical values in different tables are both kept"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

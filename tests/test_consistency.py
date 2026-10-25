@@ -98,6 +98,38 @@ def test_json_trailing_comma():
     assert len(parse_json_array('[{"a": "1"}, {"a": "2"},]')) == 2
 
 
+# --- Settings: math/stats tables repeat the same rows under different conditions ---
+MF = ["Sample size", "Measure", "Parameter", "Value"]
+
+
+def _r(table, value, n="50"):
+    return {"file": "simplex.pdf", "Sample size": n, "Measure": "Bias", "Parameter": "mu1",
+            "Value": value, "setting": table}
+
+
+def test_same_rows_in_different_tables_are_not_conflicts():
+    rows = [_r("Table 3: theta = (0.5, 0.5, 2, 2, 1)", "0.001"),
+            _r("Table 6: theta = (0.5, 0.5, 2, 2, -1)", "0.004"),
+            _r("Table 9: theta = (0.5, 0.5, 2, 2, 0)", "-0.002")]
+    assert detect_intra_paper_inconsistencies(rows, MF) == []
+
+
+def test_different_values_in_the_same_table_are_conflicts():
+    rows = [_r("Table 3: theta = 1", "0.001"), _r("table 3:  THETA = 1", "0.009")]   # same setting, spacing/case differ
+    assert len(detect_intra_paper_inconsistencies(rows, MF)) == 1
+
+
+def test_sentence_without_setting_still_checked_against_tables():
+    rows = [_r("Table 3: theta = 1", "0.001"), _r(None, "0.010")]                   # e.g. abstract claim
+    c = detect_intra_paper_inconsistencies(rows, MF)
+    assert len(c) == 1 and len(c[0]["rows"]) == 2
+
+
+def test_rows_without_any_setting_behave_as_before():
+    rows = [_r(None, "0.001"), _r(None, "0.002")]
+    assert len(detect_intra_paper_inconsistencies(rows, MF)) == 1
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

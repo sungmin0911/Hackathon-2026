@@ -44,6 +44,10 @@ Built at HackPSU (Fall 2026) for the Research Track.
   `<0.001`, `2,431`, significance stars. A flipped sign is caught
 - **Tiger Cloud memory**: every extraction is saved. The same paper with the same fields loads
   instantly, with no AI call and no cost, and past runs can be reopened anytime, PDF included
+- **🕘 History sidebar**: every past extraction, newest first and grouped by day like a chat history.
+  Search it, reopen one with a click, or open several to compare
+- **Activity dashboard**: a TimescaleDB hypertable event log with a real-time continuous
+  aggregate (usage, AI calls saved, % verified over time) and compression
 - **Live progress** for long papers, request timeouts, and automatic retries on rate limits
 
 ## Results
@@ -111,12 +115,20 @@ python eval/score.py out/results.csv eval/gold.csv
 ## Tiger Cloud (optional)
 
 With `DATABASE_URL` set, TREX stores papers (by content hash, so renaming doesn't matter), runs and
-every result in three tables (`trex_papers`, `trex_runs`, `trex_rows`; see `schema.sql`), created
-automatically.
+every result (`trex_papers`, `trex_runs`, `trex_rows`; see `schema.sql`), created automatically.
 
 - **Cache**: the same paper with the same fields loads from the database instead of calling the AI.
-- **Library**: the **🐯 Saved results** panel and the **▶ Try the demo** button reopen past runs,
-  PDFs included, so highlighted source pages work even on the hosted site.
+- **🕘 History**: every saved run in the sidebar, grouped into Today / Yesterday / Previous 7 days / Older,
+  like a chat history. One click reopens a run (PDF included, so highlighted source pages work on the
+  hosted site) and moves it to the top. Search by paper or field; **Open several at once** loads
+  multiple runs together for comparison. The **▶ Try the demo** button loads saved runs the same way.
+- **📈 Activity dashboard**, built on TimescaleDB features:
+  - every extraction and cache hit is an event in **`trex_events`, a hypertable**
+  - daily totals (fresh runs, reloads, AI calls made and saved, % verified, extraction time) come
+    from **`trex_events_daily`, a real-time continuous aggregate** refreshed hourly, so the charts
+    stay instant as the log grows
+  - a **compression policy** compresses events older than 7 days
+  - without TimescaleDB the same log works as a plain table and totals are computed on the fly
 - If the database is unreachable, TREX keeps working and shows a warning.
 
 ## Deploying (Streamlit Community Cloud)
@@ -134,8 +146,13 @@ TREX_PUBLIC = "true"
 ```
 
 `TREX_PUBLIC` turns on visitor limits so a public link can't drain the API credits: papers per run,
-pages and size per paper, AI requests per paper, live runs per visit and per day. Cached papers and
-the demo are always free. All limits are adjustable; see `.env.example`.
+pages and size per paper, AI requests per paper, live runs per visit and per day. All limits are
+adjustable; see `.env.example`.
+
+History and the demo contain other visitors' papers, so on the public site they
+are **owner-only**: set `TREX_UNLOCK = "your-code"` in the secrets and enter the code under
+**🔑 Owner unlock** in the sidebar to see them and remove the limits for your session. The Activity
+dashboard (totals only) is visible to everyone.
 
 ## Project structure
 

@@ -63,8 +63,17 @@ def _conflict_base(key: tuple[str, ...], key_fields: list[str]) -> dict:
     return {"key": dict(zip(key_fields, key)), "label": " / ".join(key)}
 
 
+def _setting(row: dict) -> str:
+    return " ".join(str(row.get("setting") or "").lower().split())
+
+
 def detect_intra_paper_inconsistencies(rows: list[dict], fields: list[str]) -> list[dict]:
-    """Same identifying fields, different numbers, within ONE paper (grouped per paper)."""
+    """Same identifying fields, different numbers, within ONE paper and under the SAME setting.
+
+    Math/statistics papers repeat identical rows across tables that differ only in their setting
+    (e.g. Table 3: true θ = 1 vs Table 6: true θ = −1). Those are different scenarios, not
+    contradictions. Rows with no recorded setting (e.g. a number in a sentence) are compared with
+    everything, so an abstract-vs-table contradiction is still caught."""
     key_fields, score_fields = split_fields(rows, fields)
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for r in rows:
@@ -74,10 +83,31 @@ def detect_intra_paper_inconsistencies(rows: list[dict], fields: list[str]) -> l
 
     conflicts = []
     for (_, k), group in groups.items():
-        numbers = {_score(r, score_fields) for r in group} - {None}
-        if len(numbers) > 1:
+        by_setting: dict[str, list[dict]] = defaultdict(list)
+        for r in group:
+            by_setting[_setting(r)].append(r)
+        unset = by_setting.pop("", [])
+        involved, values = [], set()
+        # differing values inside one setting
+        for rs in by_setting.values():
+            nums = {_score(r, score_fields) for r in rs} - {None}
+            if len(nums) > 1:
+                involved += rs
+                values |= nums
+        # rows without a setting vs everything else in the group
+        if unset:
+            nums_all = {_score(r, score_fields) for r in group} - {None}
+            if len(nums_all) > 1:
+                for r in unset:
+                    others = {_score(o, score_fields) for o in group if o is not r} - {None}
+                    mine = _score(r, score_fields)
+                    if mine is not None and others - {mine}:
+                        involved += [r] + [o for o in group if o is not r and _score(o, score_fields) != mine]
+                        values |= {mine} | (others - {mine})
+        if involved:
+            uniq = list({id(r): r for r in involved}.values())
             conflicts.append({"type": "intra", **_conflict_base(k, key_fields),
-                              "values": sorted(numbers), "rows": group, "status": "inconsistent"})
+                              "values": sorted(values), "rows": uniq, "status": "inconsistent"})
     return conflicts
 
 

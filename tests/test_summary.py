@@ -65,6 +65,61 @@ def test_real_scores_as_measurements_are_fine():
     assert sm.unsupported_numbers("DeepSeek-R1 scores 90.8% on MMLU and 71.5 points on GPQA.", facts, ROWS) == []
 
 
+# --- Focus with column names and math symbols (Bivariate Simplex paper style) ---
+SF = ["Sample size", "Measure", "Parameter", "Value"]
+SROWS = [
+    {"paper": "simplex", "Sample size": "50", "Measure": "Bias", "Parameter": "µ1", "Value": "0.001",
+     "setting": "Table 3: θ = (0.5, 0.5, 2, 2, 1)"},          # micro sign, as the PDF text has it
+    {"paper": "simplex", "Sample size": "50", "Measure": "Bias", "Parameter": "σ2 1", "Value": "−0.046",
+     "setting": "Table 3: θ = (0.5, 0.5, 2, 2, 1)"},
+    {"paper": "simplex", "Sample size": "50", "Measure": "Bias", "Parameter": "λ", "Value": "−0.150",
+     "setting": "Table 3: θ = (0.5, 0.5, 2, 2, 1)"},
+    {"paper": "simplex", "Sample size": "100", "Measure": "Bias", "Parameter": "µ1", "Value": "0.000",
+     "setting": "Table 6: θ = (0.5, 0.5, 2, 2, −1)"},
+]
+
+
+def test_symbols_match_regardless_of_style():
+    for focus, n in (("mu1", 2), ("μ₁", 2), ("µ1", 2), ("MU 1", 2), ("sigma", 1), ("σ₁²", 0),
+                     ("lambda", 1), ("table 3", 3), ("θ = (0.5", 4)):
+        assert len(sm.filter_focus(SROWS, SF, focus)) == n, focus
+
+
+def test_column_name_focus_groups_by_that_column():
+    assert sm.focus_column(SF, "parameter") == "Parameter"
+    assert sm.focus_column(SF, "Parameters") == "Parameter"
+    sm.complete = lambda s, u: "By parameter, λ has the largest bias."
+    out = sm.summarize(SROWS, SF, excluded=0, focus="parameter")
+    assert out["mode"] == "column" and out["rows_used"] == 4
+    assert out["facts"]["group_column"] == "Parameter"
+
+
+def test_no_match_suggests_values():
+    sm.complete = lambda s, u: "should not be called"
+    out = sm.summarize(SROWS, SF, excluded=0, focus="gemini")
+    assert out["text"] == "" and "Parameter" in out["examples"] and "µ1" in out["examples"]["Parameter"]
+
+
+def test_measures_are_compared_separately_with_the_right_direction():
+    rows = SROWS + [{"paper": "simplex", "Sample size": "50", "Measure": "RMSE", "Parameter": "µ1", "Value": "0.027"},
+                    {"paper": "simplex", "Sample size": "50", "Measure": "RMSE", "Parameter": "λ", "Value": "0.284"}]
+    f = sm.build_facts(rows, SF, group_by="Parameter")
+    assert f["measure_column"] == "Measure" and "better_is" not in f
+    g = {(x["Measure"], x["Parameter"]): x for x in f["by_group"]}
+    assert g[("Bias", "µ1")]["better_is"] == "closer to 0"
+    assert g[("Bias", "µ1")]["best"]["Value"] == "0.000"            # |0.000| < |0.001|
+    assert all(x["better_is"] in ("closer to 0", "lower") for x in f["by_group"])
+    f2 = sm.build_facts(rows, SF)                                       # grouped by Parameter by default too
+    assert {x["Measure"] for x in f2["by_group"]} == {"Bias", "RMSE"}
+
+
+def test_typographic_minus_in_summary_is_not_flagged():
+    facts = sm.build_facts(SROWS, SF, group_by="Parameter")
+    text = "λ shows the largest bias (−0.150), while µ1 is nearly unbiased (0.001); σ2 1 is −0.046."
+    assert sm.unsupported_numbers(text, facts, SROWS) == []
+    assert sm.unsupported_numbers("λ has a bias of −0.350.", facts, SROWS) == ["−0.350"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

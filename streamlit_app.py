@@ -61,6 +61,12 @@ ss.setdefault("fields_text", "")
 ss.setdefault("suggestions", {})  # file name -> list of suggested field sets
 ss.setdefault("diagnoses", {})    # (file name, fields) -> per-field explanation
 ss.setdefault("session_runs", 0)  # fresh extractions by this visitor (public limit)
+ss.setdefault("unlocked", False)  # owner entered TREX_UNLOCK: no limits for this session
+
+
+def limited() -> bool:
+    """Public limits apply: public site, and this session hasn't been unlocked."""
+    return PUBLIC and not ss.unlocked
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -126,13 +132,13 @@ def show_diagnosis(path: Path, fields: list[str]) -> None:
     if missing and len(kept) >= 2:
         st.markdown("Every row needs **all** the fields together, so one missing field means no rows.")
         st.button(f"Use without {', '.join(missing)}  →  {', '.join(kept)}", key=f"drop_{path.name}",
-                  on_click=use_fields, args=(kept,), use_container_width=True)
+                  on_click=use_fields, args=(kept,), width="stretch")
         for d in diag:
             if d["status"] != "reported" and d.get("closest"):
                 swapped = [d["closest"] if f == d["field"] else f for f in fields]
                 st.button(f"Swap {d['field']} for {d['closest']}  →  {', '.join(swapped)}",
                           key=f"swap_{path.name}_{d['field']}", on_click=use_fields, args=(swapped,),
-                          use_container_width=True)
+                          width="stretch")
 
 
 def show_suggestions(path: Path, where: str) -> None:
@@ -143,12 +149,118 @@ def show_suggestions(path: Path, where: str) -> None:
         return
     for i, s in enumerate(sets):
         st.button(f"Use: {', '.join(s['fields'])}", key=f"use_{where}_{path.name}_{i}",
-                  on_click=use_fields, args=(s["fields"],), use_container_width=True)
+                  on_click=use_fields, args=(s["fields"],), width="stretch")
         detail = s.get("why") or ""
         if s.get("example"):
             detail += ("  \n" if detail else "") + "e.g. " + " · ".join(f"{k}: {v}" for k, v in s["example"].items())
         if detail:
             st.caption(detail)
+
+
+def is_owner() -> bool:
+    """Owner view: running locally, or the public site unlocked with TREX_UNLOCK.
+    Saved results, the recent list and the demo hold other visitors' papers, so strangers don't see them."""
+    return (not PUBLIC) or ss.unlocked
+
+
+def open_run(run_id: int, run_fields: list[str]) -> None:
+    """Reopen one saved run (History callback). Logged as a 'reopen' so it moves to the top."""
+    ss.rows = db.load_runs([run_id], pdf_dir=Path(ss.tmpdir) / "library")
+    ss.fields, ss.summary, ss.last_run = run_fields, None, None
+    ss.open_run_ids = [run_id]
+    db.log_event("reopen", [], run_id=run_id, fields=run_fields)
+
+
+def history_bucket(ts) -> str:
+    import datetime as _dt
+    days = (_dt.datetime.now(_dt.timezone.utc).date() - ts.astimezone(_dt.timezone.utc).date()).days
+    return "Today" if days <= 0 else "Yesterday" if days == 1 else "Previous 7 days" if days <= 7 else "Older"
+
+
+def render_history() -> tuple[list[dict], bool, list[int]]:
+    """Claude-style history in the sidebar: every saved run, newest first, grouped by date.
+    Returns (all runs, load-several clicked, picked run ids) for the multi-open option."""
+    from app.summary import canon
+    st.markdown("#### 🕘 History")
+    runs = db.history()
+    if not runs:
+        st.caption("Nothing saved yet. Every extraction appears here automatically.")
+        return [], False, []
+    query = st.text_input("Search history", placeholder="Search papers or fields", label_visibility="collapsed")
+    shown = [r for r in runs if not query or canon(query) in canon(f"{r['title']} {r['file_name']} {' '.join(r['fields'])}")]
+    limit = len(shown) if ss.get("history_all") else 12
+    current = set(ss.get("open_run_ids") or [])
+    last_bucket = None
+    for r in shown[:limit]:
+        bucket = history_bucket(r["last_used"])
+        if bucket != last_bucket:
+            st.caption(bucket)
+            last_bucket = bucket
+        mark = "▸ " if r["run_id"] in current else ""
+        st.button(f"{mark}{r['title'] or r['file_name']} · {', '.join(r['fields'])}",
+                  key=f"hist_{r['run_id']}", on_click=open_run, args=(r["run_id"], r["fields"]),
+                  help=f"{r['rows']} results, {r['verified']} ✅ verified · last used {ago(r['last_used'])}",
+                  width="stretch")
+    if len(shown) > limit:
+        st.button(f"Show all {len(shown)}", key="hist_more", on_click=lambda: ss.update(history_all=True))
+    if query and not shown:
+        st.caption("No matches.")
+    picked, load = [], False
+    with st.expander("Open several at once"):
+        label = {r["run_id"]: f"{r['title'] or r['file_name']} · {', '.join(r['fields'])}" for r in runs}
+        picked = st.multiselect("Pick runs", list(label), format_func=label.get,
+                                label_visibility="collapsed", placeholder="Pick runs to compare")
+        load = st.button("Open selected", disabled=not picked, width="stretch")
+    return runs, load, picked
+
+
+def ago(ts) -> str:
+    import datetime as _dt
+    secs = (_dt.datetime.now(_dt.timezone.utc) - ts).total_seconds()
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= n:
+            return f"{int(secs // n)}{unit} ago"
+    return "just now"
+
+
+def render_activity() -> None:
+    """Usage & quality over time, read from the Tiger Cloud activity log (continuous aggregate)."""
+    feats = db.timescale_features()
+    if feats["version"]:
+        mark = lambda ok: "✅" if ok else "⬜"
+        st.caption(f"Tiger Cloud · TimescaleDB {feats['version']}: {mark(feats['hypertable'])} hypertable event log · "
+                   f"{mark(feats['continuous_aggregate'])} real-time continuous aggregate · "
+                   f"{mark(feats['compression'])} compression (events older than 7 days"
+                   f"{', ' + str(feats['compressed_chunks']) + ' chunks compressed' if feats['compressed_chunks'] else ''})")
+    else:
+        st.caption("Tiger Cloud (PostgreSQL). TimescaleDB features unavailable, so totals are computed on the fly.")
+    days = db.daily_activity(30)
+    if not days:
+        st.info("No activity yet. Every extraction and every reuse of saved results is logged here.")
+        return
+    d = pd.DataFrame(days)
+    d["day"] = pd.to_datetime(d["day"]).dt.strftime("%b %d")
+    fresh, hits = int(d["fresh_runs"].sum()), int(d["cache_hits"].sum())
+    calls, saved = int(d["ai_calls"].sum()), int(d["calls_saved"].sum())
+    checked = d["verified"].sum() + d["mismatch"].sum() + d["unverified"].sum()
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Fresh extractions (30 days)", fresh)
+    m2.metric("Reloaded from Tiger", hits, help="Same paper + fields: served from the database, no AI call")
+    m3.metric("AI calls saved", saved,
+              help="AI requests avoided thanks to reuse" + (f" ({saved / (calls + saved):.0%} of all)" if calls + saved else ""))
+    m4.metric("Values verified ✅", f"{d['verified'].sum() / checked:.0%}" if checked else "–")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Extractions per day**")
+        st.bar_chart(d.set_index("day")[["fresh_runs", "cache_hits"]]
+                     .rename(columns={"fresh_runs": "Fresh (AI)", "cache_hits": "Reloaded (Tiger)"}))
+    with c2:
+        st.markdown("**% of values verified per day**")
+        d["verified_pct"] = (100 * d["verified"] / (d["verified"] + d["mismatch"] + d["unverified"])).round(1)
+        st.bar_chart(d.set_index("day")[["verified_pct"]].rename(columns={"verified_pct": "% verified"}))
+    avg = d["avg_ms"].dropna()
+    if not avg.empty:
+        st.caption(f"Average fresh extraction: {avg.mean() / 1000:.0f}s per paper; a reload from Tiger takes well under a second.")
 
 
 def load_demo() -> None:
@@ -163,7 +275,7 @@ def load_demo() -> None:
 
 def public_block_reason(uploads) -> str | None:
     """Why a live extraction isn't allowed on the public site right now (None = allowed)."""
-    if not PUBLIC:
+    if not limited():
         return None
     if len(uploads) > LIMITS["papers"]:
         return f"The public demo reads up to {LIMITS['papers']} papers at a time. Remove some and try again."
@@ -178,7 +290,7 @@ def public_block_reason(uploads) -> str | None:
 
 def public_file_problem(up) -> str | None:
     """Size/page checks for one uploaded paper on the public site."""
-    if not PUBLIC:
+    if not limited():
         return None
     if up.size > LIMITS["mb"] * 1024 * 1024:
         return f"{up.name} is over {LIMITS['mb']} MB (public demo limit)"
@@ -196,15 +308,17 @@ def public_file_problem(up) -> str | None:
 with st.sidebar:
     st.header("1. Papers")
     uploads = st.file_uploader("PDFs", type="pdf", accept_multiple_files=True, label_visibility="collapsed")
-    if PUBLIC:
+    if limited():
         st.caption(f"Public demo: up to {LIMITS['papers']} papers per run, {LIMITS['pages']} pages / "
                    f"{LIMITS['mb']} MB each, {LIMITS['session_runs']} live runs per visit.")
+    elif PUBLIC:
+        st.caption("🔓 Unlocked: no limits for this session.")
     st.header("2. Fields")
     fields_text = st.text_input("Comma-separated", key="fields_text",
                                 placeholder="ex) Model, Benchmark, Score",
                                 help="Any columns you want, e.g. 'Drug, Dose, Outcome' or 'Method, Sample size, p-value'. "
                                      "Put the main number last.")
-    if st.button("✨ Suggest fields from my paper", disabled=not uploads, use_container_width=True,
+    if st.button("✨ Suggest fields from my paper", disabled=not uploads, width="stretch",
                  help="Reads the first uploaded paper and proposes columns it actually reports"):
         first = Path(ss.tmpdir) / uploads[0].name
         first.write_bytes(uploads[0].getvalue())
@@ -222,22 +336,13 @@ with st.sidebar:
                                 help="If a paper was already extracted with the same fields, load it from "
                                      "Tiger Cloud instantly instead of calling the AI again.")
     run = st.button("Extract", type="primary", disabled=not (uploads and parse_fields(fields_text)),
-                    use_container_width=True)
+                    width="stretch")
 
     st.divider()
     lib_runs, load_lib, picked_runs = [], False, []
-    if db.enabled():
-        with st.expander("Saved results"):
-            lib_runs = db.list_runs()
-            if not lib_runs:
-                st.caption("Nothing saved yet. Every extraction is saved here automatically.")
-            else:
-                label = {r["run_id"]: f"{r['title'] or r['file_name']} · {', '.join(r['fields'])} · "
-                                      f"{r['rows']} results ({r['verified']} ✅) · {r['created_at']:%b %d %H:%M}"
-                         for r in lib_runs}
-                picked_runs = st.multiselect("Pick saved runs", list(label), format_func=label.get,
-                                             label_visibility="collapsed", placeholder="Pick saved runs")
-                load_lib = st.button("Load selected", disabled=not picked_runs, use_container_width=True)
+    if db.enabled() and is_owner():
+        lib_runs, load_lib, picked_runs = render_history()
+        st.divider()
 
     saved, pdf_dir, load = None, "papers", False
     if not PUBLIC:  # reads files from the server's disk, so it's local-only
@@ -246,7 +351,20 @@ with st.sidebar:
                        "PDF pages are looked up in the folder below.")
             saved = st.file_uploader("Results CSV", type="csv", label_visibility="collapsed")
             pdf_dir = st.text_input("PDF folder", "papers")
-            load = st.button("Load results", disabled=not saved, use_container_width=True)
+            load = st.button("Load results", disabled=not saved, width="stretch")
+
+    unlock_code = os.getenv("TREX_UNLOCK", "").strip()
+    if PUBLIC and unlock_code and not ss.unlocked:
+        with st.expander("🔑 Owner unlock"):
+            code = st.text_input("Unlock code", type="password", label_visibility="collapsed",
+                                 placeholder="Unlock code")
+            if code:
+                import hmac
+                if hmac.compare_digest(code.strip(), unlock_code):
+                    ss.unlocked = True
+                    st.rerun()
+                else:
+                    st.caption("Wrong code.")
 
     status = tiger_status()
     if status is not None:
@@ -254,7 +372,7 @@ with st.sidebar:
                    if status["ok"] else f"🐯 Tiger Cloud: not connected ({status['error'][:80]})")
 
 META_COLS = {"paper", "file", "quote", "page", "found_page", "match_score", "status",
-             "inconsistency", "alignment", "path"}
+             "inconsistency", "alignment", "path", "setting", "cached"}
 
 if load_lib and picked_runs:
     with st.spinner("Loading from Tiger Cloud..."):
@@ -264,6 +382,9 @@ if load_lib and picked_runs:
     for r in picked:  # union of the runs' fields, in order
         lib_fields += [f for f in r["fields"] if f not in lib_fields]
     ss.rows, ss.fields, ss.summary, ss.last_run = lib_rows, lib_fields, None, None
+    ss.open_run_ids = list(picked_runs)
+    for rid in picked_runs:
+        db.log_event("reopen", [], run_id=rid)
     if not lib_rows:
         st.warning("Those runs have no saved results.")
 
@@ -294,7 +415,7 @@ if blocked:
 if run:
     fields = parse_fields(fields_text)
     rows, failed, per_paper, cached_papers = [], [], {}, []
-    max_calls = LIMITS["calls"] if PUBLIC else None
+    max_calls = LIMITS["calls"] if limited() else None
     log = io.StringIO()  # collects warnings (rate limits, cut-off replies) that normally go to the terminal
     start = time.time()
     bar = st.progress(0.0, text="Starting...")
@@ -373,11 +494,14 @@ if lr:
 if not ss.rows:
     st.info("**How it works:** 1) upload papers, 2) type the columns you want, 3) press **Extract**. "
             "Every value comes with a quote from the paper, and code (not AI) checks the quote is really there.")
-    if db.enabled():
+    if db.enabled() and is_owner():
         st.button(f"▶ Try the demo: saved results for {DEMO_FIELDS}, loads instantly",
                   type="primary", on_click=load_demo)
         if ss.get("demo_loaded") == 0:
             st.caption("No demo results saved yet. Run the papers once with those fields to create them.")
+    if db.enabled():
+        with st.expander("📈 Activity (Tiger Cloud)"):
+            render_activity()
     st.stop()
 
 fields = ss.fields
@@ -399,8 +523,14 @@ if "inconsistency" not in df:
 conflicts = detect_cross_paper_conflicts(df[df["status"] == "verified"].to_dict("records"), fields)
 n_intra = int(df["inconsistency"].notna().sum())
 
-tab_table, tab_conflicts, tab_board, tab_summary = st.tabs(
-    ["Table", f"Conflicts ({len(conflicts) + (n_intra > 0)})", "Leaderboard", "Summary"])
+tab_names = ["Table", f"Conflicts ({len(conflicts) + (n_intra > 0)})", "Leaderboard", "Summary"]
+if db.enabled():
+    tab_names.append("📈 Activity")
+tabs = st.tabs(tab_names)
+tab_table, tab_conflicts, tab_board, tab_summary = tabs[:4]
+if db.enabled():
+    with tabs[4]:
+        render_activity()
 
 # ---------------- Table tab ----------------
 with tab_table:
@@ -416,13 +546,15 @@ with tab_table:
         mask = view[fields].astype(str).apply(lambda col: col.str.contains(search, case=False, na=False)).any(axis=1)
         view = view[mask]
 
-    show = view[["status", "paper", *fields, "found_page", "inconsistency"]].copy()
+    has_setting = "setting" in view and view["setting"].notna().any()
+    show = view[["status", "paper", *(["setting"] if has_setting else []), *fields,
+                 "found_page", "inconsistency"]].copy()
     show.insert(0, " ", show.pop("status").map(ICON))
     show["inconsistency"] = show["inconsistency"].map(lambda v: "🔀 differs in paper" if isinstance(v, str) else "")
-    show = show.rename(columns={"found_page": "page", "inconsistency": "flag"})
+    show = show.rename(columns={"found_page": "page", "inconsistency": "flag", "setting": "table / setting"})
 
     st.caption("Click a row to see its source.")
-    event = st.dataframe(show, use_container_width=True, hide_index=True,
+    event = st.dataframe(show, width="stretch", hide_index=True,
                          on_select="rerun", selection_mode="single-row")
     st.download_button("Download CSV", view.drop(columns=["path"], errors="ignore").to_csv(index=False),
                        "results.csv", "text/csv")
@@ -435,6 +567,8 @@ with tab_table:
         with left:
             st.subheader(f"{ICON[row['status']]} {LABEL[row['status']]}")
             st.markdown(f"**Paper:** {row['paper']}")
+            if isinstance(row.get("setting"), str) and row.get("setting"):
+                st.markdown(f"**Table / setting:** {row['setting']}")
             for f in fields:
                 st.markdown(f"**{f}:** {row[f] if pd.notna(row[f]) else '—'}")
             st.markdown("**Evidence quote:**")
@@ -452,21 +586,23 @@ with tab_table:
             try:
                 png, hit = render_page(row["path"], page_no, row.get("quote") or "")
                 st.image(png, caption=f"Page {page_no}" + ("" if hit else " (quote not located on page)"),
-                         use_container_width=True)
+                         width="stretch")
             except Exception as e:
                 st.info(f"Couldn't render page: {e}")
 
 # ---------------- Conflicts tab ----------------
 with tab_conflicts:
-    st.caption("Same result, different numbers. Often a different model version or test setting, "
-               "so treat these as **worth a look**, not errors.")
+    st.caption("Same result, different numbers. Rows from tables with different settings (e.g. another "
+               "test problem or true parameter) are not compared. Treat these as **worth a look**, not errors.")
     intra = df[df["inconsistency"].notna()]
     st.subheader(f"Within one paper ({len(intra)} rows)")
     if intra.empty:
         st.write("None found.")
     else:
-        st.dataframe(intra[["paper", *fields, "found_page", "quote"]].rename(columns={"found_page": "page"}),
-                     hide_index=True, use_container_width=True)
+        intra_cols = ["paper", *(["setting"] if "setting" in intra and intra["setting"].notna().any() else []),
+                      *fields, "found_page", "quote"]
+        st.dataframe(intra[intra_cols].rename(columns={"found_page": "page", "setting": "table / setting"}),
+                     hide_index=True, width="stretch")
     st.subheader(f"Across papers ({len(conflicts)})")
     st.caption("Uses only ✅ verified rows.")
     if not conflicts:
@@ -510,7 +646,7 @@ with tab_board:
                       .drop_duplicates(subset=[name_col])
                       [[name_col, score_col, "paper", "_score"]])
             board.insert(0, "Rank", range(1, len(board) + 1))
-            st.dataframe(board.drop(columns="_score"), hide_index=True, use_container_width=True)
+            st.dataframe(board.drop(columns="_score"), hide_index=True, width="stretch")
             st.bar_chart(board.set_index(name_col)["_score"], horizontal=True)
         st.caption("Only ✅ verified rows are ranked. Each entry keeps its best score across papers.")
 
@@ -520,8 +656,9 @@ with tab_summary:
     excluded = len(df) - len(verified_rows)
     st.caption(f"Written only from the {len(verified_rows)} ✅ verified rows ({excluded} others excluded), "
                f"organized by your columns: {', '.join(fields)}.")
-    focus = st.text_input("Focus (optional)", placeholder="ex) Claude, or MMLU",
-                          help="Summarize only rows that mention this, e.g. one model or one benchmark")
+    focus = st.text_input("Focus (optional)", placeholder="ex) Claude, MMLU, mu1, or a column name like Parameter",
+                          help="A value (model, benchmark, parameter like μ₁ / mu1, table) summarizes only "
+                               "matching rows. A column name groups the summary by that column.")
     if st.button("Generate summary", disabled=not verified_rows):
         with st.spinner("Writing..."):
             try:
@@ -531,16 +668,23 @@ with tab_summary:
     s = ss.summary
     if isinstance(s, dict):
         if not s["text"]:
-            st.info(f'No verified rows mention "{s.get("facts", {}).get("focus") or focus}".')
+            st.info(f'No verified rows mention "{s.get("facts", {}).get("focus") or focus}". '
+                    "Focus matches values in your results, or a column name "
+                    f"({', '.join(fields)}) to group by.")
+            if s.get("examples"):
+                st.markdown("**Values you can focus on:**  \n" + "  \n".join(
+                    f"*{col}:* " + ", ".join(f"`{v}`" for v in vals) for col, vals in s["examples"].items()))
         else:
             f = s["facts"]
             st.markdown(s["text"])
             how = []
             if f.get("group_column"):
                 how.append(f"grouped by **{f['group_column']}**")
+            if f.get("measure_column"):
+                how.append(f"each **{f['measure_column']}** compared separately")
             if f.get("entity_column") and f.get("score_column"):
-                how.append(f"comparing **{f['entity_column']}** by **{f['score_column']}** "
-                           f"({f['better_is']} is better)")
+                how.append(f"comparing **{f['entity_column']}** by **{f['score_column']}**"
+                           + (f" ({f['better_is']} is better)" if f.get("better_is") else ""))
             st.caption(f"Based on {s['rows_used']} verified rows" + (f", {', '.join(how)}" if how else "") +
                        (f', focused on "{f["focus"]}"' if f.get("focus") else "") + ".")
             if s["unsupported"]:
