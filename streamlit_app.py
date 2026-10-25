@@ -27,6 +27,9 @@ except Exception:
     pass
 
 st.set_page_config(page_title="TREX: Traceable Research Extractor", page_icon="🦖", layout="wide")
+# The add-on that reads the browser ID (see visitor_id) is invisible: keep it running but take no space.
+st.markdown("<style>.st-key-trex_visitor{position:absolute;width:0;height:0;overflow:hidden;opacity:0;"
+            "pointer-events:none}</style>", unsafe_allow_html=True)
 
 # ---------------- Public-site limits (set TREX_PUBLIC=true in the hosted app's secrets) ----------------
 def _env_int(name: str, default: int) -> int:
