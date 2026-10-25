@@ -223,46 +223,6 @@ def ago(ts) -> str:
     return "just now"
 
 
-def render_activity() -> None:
-    """Usage & quality over time, read from the Tiger Cloud activity log (continuous aggregate)."""
-    feats = db.timescale_features()
-    if feats["version"]:
-        mark = lambda ok: "✅" if ok else "⬜"
-        st.caption(f"Tiger Cloud · TimescaleDB {feats['version']}: {mark(feats['hypertable'])} hypertable event log · "
-                   f"{mark(feats['continuous_aggregate'])} real-time continuous aggregate · "
-                   f"{mark(feats['compression'])} compression (events older than 7 days"
-                   f"{', ' + str(feats['compressed_chunks']) + ' chunks compressed' if feats['compressed_chunks'] else ''})")
-    else:
-        st.caption("Tiger Cloud (PostgreSQL). TimescaleDB features unavailable, so totals are computed on the fly.")
-    days = db.daily_activity(30)
-    if not days:
-        st.info("No activity yet. Every extraction and every reuse of saved results is logged here.")
-        return
-    d = pd.DataFrame(days)
-    d["day"] = pd.to_datetime(d["day"]).dt.strftime("%b %d")
-    fresh, hits = int(d["fresh_runs"].sum()), int(d["cache_hits"].sum())
-    calls, saved = int(d["ai_calls"].sum()), int(d["calls_saved"].sum())
-    checked = d["verified"].sum() + d["mismatch"].sum() + d["unverified"].sum()
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Fresh extractions (30 days)", fresh)
-    m2.metric("Reloaded from Tiger", hits, help="Same paper + fields: served from the database, no AI call")
-    m3.metric("AI calls saved", saved,
-              help="AI requests avoided thanks to reuse" + (f" ({saved / (calls + saved):.0%} of all)" if calls + saved else ""))
-    m4.metric("Values verified ✅", f"{d['verified'].sum() / checked:.0%}" if checked else "–")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Extractions per day**")
-        st.bar_chart(d.set_index("day")[["fresh_runs", "cache_hits"]]
-                     .rename(columns={"fresh_runs": "Fresh (AI)", "cache_hits": "Reloaded (Tiger)"}))
-    with c2:
-        st.markdown("**% of values verified per day**")
-        d["verified_pct"] = (100 * d["verified"] / (d["verified"] + d["mismatch"] + d["unverified"])).round(1)
-        st.bar_chart(d.set_index("day")[["verified_pct"]].rename(columns={"verified_pct": "% verified"}))
-    avg = d["avg_ms"].dropna()
-    if not avg.empty:
-        st.caption(f"Average fresh extraction: {avg.mean() / 1000:.0f}s per paper; a reload from Tiger takes well under a second.")
-
-
 def load_demo() -> None:
     """Load every saved run with the demo fields from Tiger Cloud (button callback)."""
     key = db.fields_key([f.strip() for f in DEMO_FIELDS.split(",") if f.strip()])
@@ -499,9 +459,6 @@ if not ss.rows:
                   type="primary", on_click=load_demo)
         if ss.get("demo_loaded") == 0:
             st.caption("No demo results saved yet. Run the papers once with those fields to create them.")
-    if db.enabled():
-        with st.expander("📈 Activity (Tiger Cloud)"):
-            render_activity()
     st.stop()
 
 fields = ss.fields
@@ -523,14 +480,8 @@ if "inconsistency" not in df:
 conflicts = detect_cross_paper_conflicts(df[df["status"] == "verified"].to_dict("records"), fields)
 n_intra = int(df["inconsistency"].notna().sum())
 
-tab_names = ["Table", f"Conflicts ({len(conflicts) + (n_intra > 0)})", "Leaderboard", "Summary"]
-if db.enabled():
-    tab_names.append("📈 Activity")
-tabs = st.tabs(tab_names)
-tab_table, tab_conflicts, tab_board, tab_summary = tabs[:4]
-if db.enabled():
-    with tabs[4]:
-        render_activity()
+tab_table, tab_conflicts, tab_board, tab_summary = st.tabs(
+    ["Table", f"Conflicts ({len(conflicts) + (n_intra > 0)})", "Leaderboard", "Summary"])
 
 # ---------------- Table tab ----------------
 with tab_table:

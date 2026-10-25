@@ -46,8 +46,6 @@ Built at HackPSU (Fall 2026) for the Research Track.
   instantly, with no AI call and no cost, and past runs can be reopened anytime, PDF included
 - **🕘 History sidebar**: every past extraction, newest first and grouped by day like a chat history.
   Search it, reopen one with a click, or open several to compare
-- **Activity dashboard**: a TimescaleDB hypertable event log with a real-time continuous
-  aggregate (usage, AI calls saved, % verified over time) and compression
 - **Live progress** for long papers, request timeouts, and automatic retries on rate limits
 
 ## Results
@@ -122,13 +120,13 @@ every result (`trex_papers`, `trex_runs`, `trex_rows`; see `schema.sql`), create
   like a chat history. One click reopens a run (PDF included, so highlighted source pages work on the
   hosted site) and moves it to the top. Search by paper or field; **Open several at once** loads
   multiple runs together for comparison. The **▶ Try the demo** button loads saved runs the same way.
-- **📈 Activity dashboard**, built on TimescaleDB features:
-  - every extraction and cache hit is an event in **`trex_events`, a hypertable**
-  - daily totals (fresh runs, reloads, AI calls made and saved, % verified, extraction time) come
-    from **`trex_events_daily`, a real-time continuous aggregate** refreshed hourly, so the charts
-    stay instant as the log grows
+- **Activity log**, built on TimescaleDB features (in the database, not shown on the page):
+  - every extraction, cache hit and History reopen is an event in **`trex_events`, a hypertable**;
+    History uses it to put recently opened runs first
+  - daily totals (fresh runs, reloads, AI calls made and saved, % verified) are kept in
+    **`trex_events_daily`, a real-time continuous aggregate** refreshed hourly
   - a **compression policy** compresses events older than 7 days
-  - without TimescaleDB the same log works as a plain table and totals are computed on the fly
+  - without TimescaleDB the same log works as a plain table
 - If the database is unreachable, TREX keeps working and shows a warning.
 
 ## Deploying (Streamlit Community Cloud)
@@ -151,8 +149,7 @@ adjustable; see `.env.example`.
 
 History and the demo contain other visitors' papers, so on the public site they
 are **owner-only**: set `TREX_UNLOCK = "your-code"` in the secrets and enter the code under
-**🔑 Owner unlock** in the sidebar to see them and remove the limits for your session. The Activity
-dashboard (totals only) is visible to everyone.
+**🔑 Owner unlock** in the sidebar to see them and remove the limits for your session.
 
 ## Project structure
 
