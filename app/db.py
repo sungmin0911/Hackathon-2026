@@ -384,26 +384,61 @@ def timescale_features() -> dict:
     return out
 
 
-def history(limit: int = 300) -> list[dict]:
-    """Every saved run, most recently used first (fresh run, reload or reopen), for the History list."""
+def history(limit: int = 300, visitor: str | None = None) -> list[dict]:
+    """Saved runs, most recently used first, for the History list.
+    visitor=None: every run (owner view). Otherwise only the runs that browser used."""
     if not enabled():
         return []
+    if visitor is None:
+        last_used = "greatest(r.created_at, coalesce(max(e.time), r.created_at))"
+        source = "trex_runs r JOIN trex_papers p ON p.id = r.paper_id LEFT JOIN trex_events e ON e.run_id = r.id"
+        params: tuple = (limit,)
+    else:
+        last_used = "max(v.last_used)"
+        source = ("trex_visitor_runs v JOIN trex_runs r ON r.id = v.run_id "
+                  "JOIN trex_papers p ON p.id = r.paper_id WHERE v.visitor = %s")
+        params = (visitor, limit)
     try:
         with _connect() as conn:
             rows = conn.execute(
-                """SELECT r.id, coalesce(p.title, p.file_name), p.file_name, r.fields, r.row_count,
-                          (SELECT count(*) FROM trex_rows x WHERE x.run_id = r.id AND x.status = 'verified'),
-                          greatest(r.created_at, coalesce(max(e.time), r.created_at)) AS last_used
-                   FROM trex_runs r
-                   JOIN trex_papers p ON p.id = r.paper_id
-                   LEFT JOIN trex_events e ON e.run_id = r.id
-                   GROUP BY r.id, p.id
-                   ORDER BY last_used DESC
-                   LIMIT %s""",
-                (limit,),
+                f"""SELECT r.id, coalesce(p.title, p.file_name), p.file_name, r.fields, r.row_count,
+                           (SELECT count(*) FROM trex_rows x WHERE x.run_id = r.id AND x.status = 'verified'),
+                           {last_used} AS last_used
+                    FROM {source}
+                    GROUP BY r.id, p.id
+                    ORDER BY last_used DESC
+                    LIMIT %s""",
+                params,
             ).fetchall()
         return [{"run_id": r[0], "title": r[1], "file_name": r[2], "fields": list(r[3]), "rows": r[4],
                  "verified": r[5], "last_used": r[6]} for r in rows]
     except Exception as e:
         _warn(f"couldn't read history ({type(e).__name__}: {e})")
         return []
+
+
+def touch_run(visitor: str | None, run_id: int | None) -> None:
+    """Record that this visitor used this run (it goes to the top of their History)."""
+    if not (enabled() and visitor and run_id):
+        return
+    try:
+        with _connect() as conn:
+            conn.execute("""INSERT INTO trex_visitor_runs (visitor, run_id) VALUES (%s, %s)
+                            ON CONFLICT (visitor, run_id) DO UPDATE SET last_used = now()""", (visitor, run_id))
+    except Exception as e:
+        _warn(f"couldn't update history ({type(e).__name__}: {e})")
+
+
+def move_visitor(old: str, new: str) -> None:
+    """Hand runs recorded under a temporary ID over to the browser's real ID."""
+    if not (enabled() and old and new and old != new):
+        return
+    try:
+        with _connect() as conn:
+            conn.execute("""INSERT INTO trex_visitor_runs (visitor, run_id, last_used)
+                            SELECT %s, run_id, last_used FROM trex_visitor_runs WHERE visitor = %s
+                            ON CONFLICT (visitor, run_id) DO UPDATE
+                            SET last_used = greatest(trex_visitor_runs.last_used, EXCLUDED.last_used)""", (new, old))
+            conn.execute("DELETE FROM trex_visitor_runs WHERE visitor = %s", (old,))
+    except Exception as e:
+        _warn(f"couldn't move history ({type(e).__name__}: {e})")

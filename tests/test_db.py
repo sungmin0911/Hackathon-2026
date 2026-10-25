@@ -20,7 +20,7 @@ def _setup():
     with psycopg.connect(URL, autocommit=True) as c:
         c.execute("DROP MATERIALIZED VIEW IF EXISTS trex_events_daily CASCADE")
         c.execute("DROP TABLE IF EXISTS trex_events CASCADE")      # a hypertable must be dropped on its own
-        c.execute("DROP TABLE IF EXISTS trex_rows, trex_runs, trex_papers CASCADE")
+        c.execute("DROP TABLE IF EXISTS trex_visitor_runs, trex_rows, trex_runs, trex_papers CASCADE")
     from app import db
     db._schema_ready.clear()
 
@@ -157,6 +157,31 @@ def test_history_moves_reopened_run_to_top():
     assert [h["run_id"] for h in db.history()] == [first, other]
     day = db.daily_activity()[-1]  # reopens don't inflate the totals
     assert (day["fresh_runs"], day["cache_hits"], day["rows"]) == (1, 2, 6), day
+
+
+def test_each_visitor_sees_only_their_own_history():
+    _setup()
+    os.environ.pop("TREX_DISABLE_TIMESCALE", None)
+    import app.extractor as ex
+    from app import db
+    from app.pipeline import process_paper
+    tmp = Path(tempfile.mkdtemp())
+    a_pdf, b_pdf = tmp / "a.pdf", tmp / "b.pdf"
+    _make_pdf(a_pdf, ["Table 1: ResNet-110 has 6.43% error."])
+    _make_pdf(b_pdf, ["Table 1: VGG has 7.1% error."])
+    ex.complete = lambda s, u: json.dumps({"results": []})
+    process_paper(a_pdf, ["Model"], visitor="alice")
+    process_paper(b_pdf, ["Model"], visitor="bob")
+    process_paper(a_pdf, ["Model"], visitor="bob")          # cache hit: now in Bob's history too
+    files = lambda who: [h["file_name"] for h in db.history(visitor=who)]
+    assert files("alice") == ["a.pdf"]
+    assert files("bob") == ["a.pdf", "b.pdf"]
+    assert files("carol") == []
+    assert len(db.history()) == 2                            # owner view: every run
+    db.touch_run("bob", db.history(visitor="bob")[1]["run_id"])   # reopen b.pdf
+    assert files("bob") == ["b.pdf", "a.pdf"]
+    db.move_visitor("bob", "bob-browser")                    # temporary ID handed to the real one
+    assert files("bob-browser") == ["b.pdf", "a.pdf"] and files("bob") == []
 
 
 if __name__ == "__main__":

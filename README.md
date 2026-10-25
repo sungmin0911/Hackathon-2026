@@ -44,8 +44,8 @@ Built at HackPSU (Fall 2026) for the Research Track.
   `<0.001`, `2,431`, significance stars. A flipped sign is caught
 - **Tiger Cloud memory**: every extraction is saved. The same paper with the same fields loads
   instantly, with no AI call and no cost, and past runs can be reopened anytime, PDF included
-- **🕘 History sidebar**: every past extraction, newest first and grouped by day like a chat history.
-  Search it, reopen one with a click, or open several to compare
+- **🕘 History sidebar**: your past extractions, newest first and grouped by day like a chat history.
+  Search it, reopen one with a click, or open several to compare. Each visitor sees only their own
 - **Live progress** for long papers, request timeouts, and automatic retries on rate limits
 
 ## Results
@@ -113,11 +113,13 @@ python eval/score.py out/results.csv eval/gold.csv
 ## Tiger Cloud (optional)
 
 With `DATABASE_URL` set, TREX stores papers (by content hash, so renaming doesn't matter), runs and
-every result (`trex_papers`, `trex_runs`, `trex_rows`; see `schema.sql`), created automatically.
+every result (`trex_papers`, `trex_runs`, `trex_rows`, `trex_visitor_runs`; see `schema.sql`), created automatically.
 
 - **Cache**: the same paper with the same fields loads from the database instead of calling the AI.
-- **🕘 History**: every saved run in the sidebar, grouped into Today / Yesterday / Previous 7 days / Older,
-  like a chat history. One click reopens a run (PDF included, so highlighted source pages work on the
+- **🕘 History**: saved runs in the sidebar, grouped into Today / Yesterday / Previous 7 days / Older,
+  like a chat history. Each visitor sees only the runs made in their browser: a random ID kept in the
+  browser's local storage links them to their runs (`trex_visitor_runs`), with no accounts. Another
+  browser or a private window starts with an empty History. One click reopens a run (PDF included, so highlighted source pages work on the
   hosted site) and moves it to the top. Search by paper or field; **Open several at once** loads
   multiple runs together for comparison. The **▶ Try the demo** button loads saved runs the same way.
 - **Activity log**, built on TimescaleDB features (in the database, not shown on the page):
@@ -147,9 +149,9 @@ TREX_PUBLIC = "true"
 pages and size per paper, AI requests per paper, live runs per visit and per day. All limits are
 adjustable; see `.env.example`.
 
-History and the demo contain other visitors' papers, so on the public site they
-are **owner-only**: set `TREX_UNLOCK = "your-code"` in the secrets and enter the code under
-**🔑 Owner unlock** in the sidebar to see them and remove the limits for your session.
+Visitors see only their own History. Set `TREX_UNLOCK = "your-code"` in the secrets and enter the
+code under **🔑 Owner unlock** in the sidebar to see every visitor's runs, use the demo button and
+remove the limits for your session.
 
 ## Project structure
 
@@ -190,4 +192,4 @@ TEST_DATABASE_URL=postgres://... python tests/test_db.py   # needs a throwaway d
 
 ## Built with
 
-Python · PyMuPDF · RapidFuzz · pandas · Streamlit · Tiger Cloud (PostgreSQL) · xAI Grok API
+Python · PyMuPDF · RapidFuzz · pandas · Streamlit (+ streamlit-js-eval) · Tiger Cloud (PostgreSQL) · xAI Grok API

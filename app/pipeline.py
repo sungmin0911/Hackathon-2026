@@ -31,7 +31,9 @@ def keep_best_copies(rows: list[dict], fields: list[str]) -> list[dict]:
 
 
 def process_paper(path: str | Path, fields: list[str], check_consistency: bool = True,
-                  use_cache: bool = True, on_progress=None, max_calls: int | None = None) -> list[dict]:
+                  use_cache: bool = True, on_progress=None, max_calls: int | None = None,
+                  visitor: str | None = None) -> list[dict]:
+    """visitor: the browser ID whose History this run should appear in."""
     path = Path(path)
     file_hash = db.file_sha256(path) if db.enabled() else None
     started = time.time()
@@ -43,6 +45,7 @@ def process_paper(path: str | Path, fields: list[str], check_consistency: bool =
             db.log_event("cache_hit", rows, run_id=hit["run_id"], paper=rows[0].get("paper") if rows else path.stem,
                          file_name=path.name, fields=fields, calls_saved=hit["ai_calls"],
                          duration_ms=int((time.time() - started) * 1000))
+            db.touch_run(visitor, hit["run_id"])
             return rows
 
     pages = read_pdf(path)
@@ -60,4 +63,5 @@ def process_paper(path: str | Path, fields: list[str], check_consistency: bool =
                              pdf_bytes=pdf_bytes, model=os.getenv("LLM_MODEL"), ai_calls=stats.get("ai_calls"))
         db.log_event("extract", verified, run_id=run_id, paper=title, file_name=path.name, fields=fields,
                      ai_calls=stats.get("ai_calls", 0), duration_ms=int((time.time() - started) * 1000))
+        db.touch_run(visitor, run_id)
     return verified

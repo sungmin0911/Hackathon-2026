@@ -39,3 +39,13 @@ CREATE TABLE IF NOT EXISTS trex_rows (
 
 CREATE INDEX IF NOT EXISTS trex_rows_run_idx ON trex_rows (run_id);
 CREATE INDEX IF NOT EXISTS trex_rows_status_idx ON trex_rows (status);
+
+-- Which runs each visitor has used (fresh run, reload from cache, or reopen), for their own History.
+-- "visitor" is a random ID kept in the visitor's browser; there are no accounts.
+CREATE TABLE IF NOT EXISTS trex_visitor_runs (
+    visitor     TEXT NOT NULL,
+    run_id      INT NOT NULL REFERENCES trex_runs(id) ON DELETE CASCADE,
+    last_used   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (visitor, run_id)
+);
+CREATE INDEX IF NOT EXISTS trex_visitor_runs_recent_idx ON trex_visitor_runs (visitor, last_used DESC);

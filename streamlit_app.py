@@ -159,8 +159,34 @@ def show_suggestions(path: Path, where: str) -> None:
 
 def is_owner() -> bool:
     """Owner view: running locally, or the public site unlocked with TREX_UNLOCK.
-    Saved results, the recent list and the demo hold other visitors' papers, so strangers don't see them."""
+    The owner sees every visitor's runs and the demo; strangers see only their own History."""
     return (not PUBLIC) or ss.unlocked
+
+
+# A random ID kept in the browser's localStorage, so each visitor gets their own History without accounts.
+VISITOR_JS = ("(() => { try { let v = localStorage.getItem('trex_visitor');"
+              " if (!v) { v = crypto.randomUUID(); localStorage.setItem('trex_visitor', v); }"
+              " return v; } catch (e) { return ''; } })()")
+
+
+def visitor_id() -> str:
+    """This browser's ID. Until the browser answers (or if its storage is blocked), a temporary
+    per-visit ID is used; runs made under it are handed over once the real ID arrives."""
+    import uuid
+    if "visitor" not in ss:
+        ss.visitor, ss.visitor_checked = str(uuid.uuid4()), False
+    if not ss.visitor_checked and db.enabled():
+        try:
+            from streamlit_js_eval import streamlit_js_eval
+            got = streamlit_js_eval(js_expressions=VISITOR_JS, key="trex_visitor")
+        except Exception:
+            got = ""  # add-on missing or broken: History lasts for this visit only
+        if got is not None:  # None = the browser hasn't answered yet
+            ss.visitor_checked = True
+            if re.fullmatch(r"[0-9a-f-]{36}", str(got)) and got != ss.visitor:
+                db.move_visitor(ss.visitor, got)
+                ss.visitor = got
+    return ss.visitor
 
 
 def open_run(run_id: int, run_fields: list[str]) -> None:
@@ -169,6 +195,7 @@ def open_run(run_id: int, run_fields: list[str]) -> None:
     ss.fields, ss.summary, ss.last_run = run_fields, None, None
     ss.open_run_ids = [run_id]
     db.log_event("reopen", [], run_id=run_id, fields=run_fields)
+    db.touch_run(ss.get("visitor"), run_id)
 
 
 def history_bucket(ts) -> str:
@@ -178,13 +205,16 @@ def history_bucket(ts) -> str:
 
 
 def render_history() -> tuple[list[dict], bool, list[int]]:
-    """Claude-style history in the sidebar: every saved run, newest first, grouped by date.
-    Returns (all runs, load-several clicked, picked run ids) for the multi-open option."""
+    """Claude-style history in the sidebar, newest first, grouped by date. Visitors see the runs
+    made in their own browser; the owner sees every run.
+    Returns (runs, load-several clicked, picked run ids) for the multi-open option."""
     from app.summary import canon
-    st.markdown("#### 🕘 History")
-    runs = db.history()
+    st.markdown("#### 🕘 History" + (" · all visitors" if PUBLIC and is_owner() else ""))
+    me = visitor_id()
+    runs = db.history() if is_owner() else db.history(visitor=me)
     if not runs:
-        st.caption("Nothing saved yet. Every extraction appears here automatically.")
+        st.caption("Your extractions will appear here. History is kept in this browser"
+                   + (", so another browser or a private window starts empty." if PUBLIC else "."))
         return [], False, []
     query = st.text_input("Search history", placeholder="Search papers or fields", label_visibility="collapsed")
     shown = [r for r in runs if not query or canon(query) in canon(f"{r['title']} {r['file_name']} {' '.join(r['fields'])}")]
@@ -300,7 +330,7 @@ with st.sidebar:
 
     st.divider()
     lib_runs, load_lib, picked_runs = [], False, []
-    if db.enabled() and is_owner():
+    if db.enabled():
         lib_runs, load_lib, picked_runs = render_history()
         st.divider()
 
@@ -345,6 +375,7 @@ if load_lib and picked_runs:
     ss.open_run_ids = list(picked_runs)
     for rid in picked_runs:
         db.log_event("reopen", [], run_id=rid)
+        db.touch_run(ss.get("visitor"), rid)
     if not lib_rows:
         st.warning("Those runs have no saved results.")
 
@@ -395,7 +426,8 @@ if run:
             path = Path(ss.tmpdir) / up.name
             path.write_bytes(up.getvalue())
             try:
-                got = process_paper(path, fields, use_cache=use_cache, on_progress=show, max_calls=max_calls)
+                got = process_paper(path, fields, use_cache=use_cache, on_progress=show, max_calls=max_calls,
+                                    visitor=ss.get("visitor"))
                 for r in got:
                     r["path"] = str(path)
                 rows.extend(got)
@@ -412,6 +444,9 @@ if run:
     ss.last_run = {"failed": failed, "warnings": [w.strip() for w in log.getvalue().splitlines() if w.strip()],
                    "per_paper": per_paper, "seconds": time.time() - start, "fields": fields,
                    "cached": cached_papers}
+    ss.open_run_ids = []
+    if db.enabled():
+        st.rerun()  # redraw so the sidebar History includes this run (the report above is kept in session)
 
 # Always report what the last run did, so an empty result never looks like "nothing happened"
 lr = ss.last_run
