@@ -1,0 +1,39 @@
+file,Model,Benchmark,Score,page
+deepseek-r1.pdf,Claude-3.5-Sonnet-1022,MMLU,88.3,13
+deepseek-r1.pdf,GPT-4o-0513,MMLU,87.2,13
+deepseek-r1.pdf,DeepSeek-V3,MMLU,88.5,13
+deepseek-r1.pdf,OpenAI o1-mini,MMLU,85.2,13
+deepseek-r1.pdf,OpenAI o1-1217,MMLU,91.8,13
+deepseek-r1.pdf,DeepSeek-R1,MMLU,90.8,13
+deepseek-r1.pdf,Claude-3.5-Sonnet-1022,MMLU-Pro,78.0,13
+deepseek-r1.pdf,GPT-4o-0513,MMLU-Pro,72.6,13
+deepseek-r1.pdf,DeepSeek-V3,MMLU-Pro,75.9,13
+deepseek-r1.pdf,OpenAI o1-mini,MMLU-Pro,80.3,13
+deepseek-r1.pdf,DeepSeek-R1,MMLU-Pro,84.0,13
+deepseek-r1.pdf,Claude-3.5-Sonnet-1022,GPQA Diamond,65.0,13
+deepseek-r1.pdf,GPT-4o-0513,GPQA Diamond,49.9,13
+deepseek-r1.pdf,DeepSeek-V3,GPQA Diamond,59.1,13
+deepseek-r1.pdf,OpenAI o1-mini,GPQA Diamond,60.0,13
+deepseek-r1.pdf,OpenAI o1-1217,GPQA Diamond,75.7,13
+deepseek-r1.pdf,DeepSeek-R1,GPQA Diamond,71.5,13
+kimi-k2.pdf,Kimi-K2-Instruct,MMLU,89.5,16
+kimi-k2.pdf,DeepSeek-V3-0324,MMLU,89.4,16
+kimi-k2.pdf,Qwen3-235B-A22B,MMLU,87.0,16
+kimi-k2.pdf,Claude Sonnet 4,MMLU,91.5,16
+kimi-k2.pdf,Claude Opus 4,MMLU,92.9,16
+kimi-k2.pdf,GPT-4.1,MMLU,90.4,16
+kimi-k2.pdf,Gemini 2.5 Flash,MMLU,90.1,16
+kimi-k2.pdf,Kimi-K2-Instruct,MMLU-Pro,81.1,16
+kimi-k2.pdf,DeepSeek-V3-0324,MMLU-Pro,81.2,16
+kimi-k2.pdf,Qwen3-235B-A22B,MMLU-Pro,77.3,16
+kimi-k2.pdf,Claude Sonnet 4,MMLU-Pro,83.7,16
+kimi-k2.pdf,Claude Opus 4,MMLU-Pro,86.6,16
+kimi-k2.pdf,GPT-4.1,MMLU-Pro,81.8,16
+kimi-k2.pdf,Gemini 2.5 Flash,MMLU-Pro,79.4,16
+kimi-k2.pdf,Kimi-K2-Instruct,GPQA Diamond,75.1,16
+kimi-k2.pdf,DeepSeek-V3-0324,GPQA Diamond,68.4,16
+kimi-k2.pdf,Qwen3-235B-A22B,GPQA Diamond,62.9,16
+kimi-k2.pdf,Claude Sonnet 4,GPQA Diamond,70.0,16
+kimi-k2.pdf,Claude Opus 4,GPQA Diamond,74.9,16
+kimi-k2.pdf,GPT-4.1,GPQA Diamond,66.3,16
+kimi-k2.pdf,Gemini 2.5 Flash,GPQA Diamond,68.2,16
