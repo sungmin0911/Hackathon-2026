@@ -1,143 +1,179 @@
 # 🦖 TREX: Traceable Research Extractor
 
-Upload research papers, name the facts you want (e.g. *Model, Dataset, Accuracy*), and get back one
-comparison table. Every value is linked to a verbatim quote from the paper, and plain code (not AI)
-checks that the quote really exists.
+**Pull the numbers you need out of research papers, with every value traced to its exact page and quote.**
 
-| Status | Meaning |
-|---|---|
-| ✅ verified | Quote found in the paper, and every number in the values appears in the quote |
-| ⚠️ mismatch | Quote found, but a value's number isn't in it (the AI may have changed it) |
-| ❌ unverified | Quote not found in the paper (the AI may have made it up) |
+Researchers spend hours copying results out of papers into spreadsheets for literature reviews and
+comparisons. AI can speed that up, but it also makes numbers up. TREX uses AI to *find* the values
+and plain code to *check* them: every number must come with a verbatim quote, and the quote must
+really exist in the paper.
+
+Built at HackPSU (Fall 2026) for the Research Track.
+
+---
+
+## What it does
+
+1. **Upload papers and name the columns you want**: `Model, Benchmark, Score` for ML,
+   `Variable, Coefficient, Std. error, p-value` for statistics, `Drug, Dose, Outcome` for medicine.
+   Any field works.
+2. **TREX extracts every matching result**, including whole comparison tables with every competitor
+   column, not just the paper's own model.
+3. **Code verifies each value** against the paper:
+
+   | Status | Meaning |
+   |---|---|
+   | ✅ Verified | The quote is in the paper, and every number in the value appears in it (signs included) |
+   | ⚠️ Mismatch | The quote is real, but a number differs (wrong column, rounding, flipped sign) |
+   | ❌ Not found | The quote isn't in the paper. Likely invented, so not trusted |
+
+4. **Click any row** to see the original PDF page with the quote highlighted.
+
+### Features
+
+- **Any field, any discipline**: tested on AI/ML technical reports, statistics papers and numerical analysis papers
+- **✨ Suggest fields**: reads your paper and proposes columns it actually reports (e.g. *6 models compared on 20 benchmarks*)
+- **"Why nothing matched"**: if your fields aren't in the paper, TREX explains field by field
+  (✅ found / 🟡 mentioned without values / ❌ not in this paper), suggests the closest alternative, and
+  offers one-click fixes. It never invents values to fill the gap
+- **Conflicts**: flags the same result reported with different numbers, within a paper or across papers
+- **Leaderboard**: ranks results across papers using only verified rows; detects lower-is-better
+  metrics (error, loss, latency, p-value)
+- **Summary**: a written takeaway built from facts that code computes from *your* columns. Any number
+  the AI writes that isn't in the data is flagged
+- **Statistics-aware numbers**: typographic minus signs (`−0.021`), `(0.012)` standard errors, `.003`,
+  `<0.001`, `2,431`, significance stars. A flipped sign is caught
+- **Tiger Cloud memory**: every extraction is saved. The same paper with the same fields loads
+  instantly, with no AI call and no cost, and past runs can be reopened anytime, PDF included
+- **Live progress** for long papers, request timeouts, and automatic retries on rate limits
+
+## Results
+
+- **38 / 38** hand-checked values extracted correctly from two real AI technical reports
+  (DeepSeek-R1, Kimi-K2), every one ✅ verified. See `eval/gold.csv` and `eval/score.py`.
+- **800+ values** from 2 papers in about 3 minutes, including every competitor model (Claude, GPT, Gemini, Llama).
+- Verification caught the AI swapping two models' scores taken from a bar chart.
+
+The answer key is small (38 values), so read this as "verified on 38 hand-checked values", not as a general accuracy rate.
+
+---
+
+## How it works
+
+```
+PDF ─► pdf_reader ─► extractor (AI) ─► verify (code) ─► consistency ─► db (Tiger Cloud) ─► web UI / CLI / CSV
+       text per      compact tables      quote exists?     same result,     cache + library
+       page          + quotes per row    numbers match?    other numbers?
+```
+
+- **Extraction** sends papers to the AI a few pages at a time, in parallel. Comparison tables come
+  back in a compact form (headers once, then label + values + one quote per row), which keeps big
+  tables (300+ numbers on one page) from being cut short. Charts are skipped, because their PDF text is scrambled.
+- **Verification** is deterministic code: fuzzy quote matching against the page text, then an exact
+  check that the values' numbers, including signs, appear in that quote.
+- **The AI never grades itself.**
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # fill in your LLM API key (+ Tiger DATABASE_URL, optional)
-python tests/test_verify.py   # offline tests, no API key needed
-
-# put PDFs in papers/
-python cli.py papers/ --fields "Model,Dataset,Accuracy"   # prints rows, writes out/results.csv
-streamlit run streamlit_app.py                            # web UI
+cp .env.example .env              # Windows: copy .env.example .env
 ```
 
-## Tiger Cloud (optional database)
-
-With a Tiger Cloud connection string in `.env`, TREX saves every extraction and reuses it:
+Fill in `.env`:
 
 ```
-DATABASE_URL=postgres://user:password@host:port/tsdb?sslmode=require
+LLM_PROVIDER=xai                  # or anthropic / openai
+LLM_MODEL=<model name from your provider's console>
+XAI_API_KEY=...
+DATABASE_URL=postgres://...       # optional: Tiger Cloud, for the cache and library
 ```
 
-- **Cache:** the same PDF (matched by content, so renaming doesn't matter) with the same fields loads
-  instantly from the database. No AI call, no cost. Use `--no-cache` (CLI) or untick
-  "Reuse saved results" (website) to force a fresh extraction.
-- **Library:** the website's "🐯 Saved results" panel reopens any past run, including the PDF, so
-  highlighted source pages work even on the hosted site.
-- Tables (`trex_papers`, `trex_runs`, `trex_rows`) are created automatically. See `schema.sql`.
-- If the database is unreachable, TREX keeps working and prints a warning.
+**Website**
 
 ```bash
-python cli.py papers --fields x --check-db      # test the connection
+streamlit run streamlit_app.py
 ```
 
-Database tests (use a throwaway database, since they drop and recreate the TREX tables):
+**Command line** (reads every PDF in a folder):
+
 ```bash
-TEST_DATABASE_URL=postgres://... python tests/test_db.py
+python cli.py papers --fields "Model,Benchmark,Score" --out out/results.csv
+python cli.py papers --fields x --check-db         # test the Tiger Cloud connection
+python cli.py papers --fields "..." --no-cache     # force a fresh extraction
 ```
 
-## How it works
+**Measure accuracy against the answer key**
 
-```
-PDF ──► pdf_reader.py ──► extractor.py ──► verify.py ──► db.py (Tiger) ──► UI / CSV
-        text per page     LLM returns       code checks    stores rows
-                          values + quote    quote exists
-                          + page as JSON    + numbers match
+```bash
+python eval/score.py out/results.csv eval/gold.csv
 ```
 
-| File | Job |
+## Tiger Cloud (optional)
+
+With `DATABASE_URL` set, TREX stores papers (by content hash, so renaming doesn't matter), runs and
+every result in three tables (`trex_papers`, `trex_runs`, `trex_rows`; see `schema.sql`), created
+automatically.
+
+- **Cache**: the same paper with the same fields loads from the database instead of calling the AI.
+- **Library**: the **🐯 Saved results** panel and the **▶ Try the demo** button reopen past runs,
+  PDFs included, so highlighted source pages work even on the hosted site.
+- If the database is unreachable, TREX keeps working and shows a warning.
+
+## Deploying (Streamlit Community Cloud)
+
+1. Push to a public GitHub repo (`.gitignore` keeps `.env`, `.venv` and PDFs out).
+2. On share.streamlit.io: **Create app** → this repo, branch `main`, file `streamlit_app.py`.
+3. **Advanced settings → Secrets**:
+
+```toml
+LLM_PROVIDER = "xai"
+LLM_MODEL = "..."
+XAI_API_KEY = "..."
+DATABASE_URL = "postgres://..."
+TREX_PUBLIC = "true"
+```
+
+`TREX_PUBLIC` turns on visitor limits so a public link can't drain the API credits: papers per run,
+pages and size per paper, AI requests per paper, live runs per visit and per day. Cached papers and
+the demo are always free. All limits are adjustable; see `.env.example`.
+
+## Project structure
+
+| Path | Purpose |
 |---|---|
-| `app/pdf_reader.py` | PDF → list of pages with page numbers |
-| `app/llm.py` | Calls Anthropic or OpenAI (set `LLM_PROVIDER` in `.env`) |
-| `app/extractor.py` | Prompt + JSON parsing; fields are whatever the user types |
-| `app/verify.py` | Fuzzy quote matching + number check → status |
-| `app/pipeline.py` | Glues the above together for one paper |
-| `app/db.py`, `schema.sql` | Tiger Cloud cache + library (skipped if no `DATABASE_URL`) |
-| `cli.py` | Run on a folder of PDFs |
-| `streamlit_app.py` | Upload-and-extract web UI |
+| `streamlit_app.py` | Web interface |
+| `cli.py` | Command-line runner |
+| `app/extractor.py` | AI prompts, compact-table parsing, chunking, field suggestions and diagnosis |
+| `app/verify.py` | Quote matching and number checks |
+| `app/numbers.py` | Sign- and format-aware number reading |
+| `app/consistency.py` | Conflict detection; works out which column is the score |
+| `app/summary.py` | Field-based summary with number checking |
+| `app/db.py`, `schema.sql` | Tiger Cloud cache and library |
+| `app/llm.py` | AI provider wrapper (xAI/Grok, Anthropic, OpenAI) with timeouts and retries |
+| `app/pdf_reader.py`, `app/highlight.py` | PDF text, rendering and quote highlighting |
+| `eval/` | Hand-checked answer key and scoring script |
+| `tests/` | Automated tests |
+| `docs/` | Pitch, Devpost draft, build plan, notes |
 
----
+## Tests
 
-# Build plan
-
-## Workstreams (one owner each)
-
-The pieces only talk through the **row format** below, so people can work in parallel without
-waiting on each other.
-
-```python
-# one extracted result, after verification
-{"paper": "Deep Residual Learning...", "file": "resnet.pdf",
- "Model": "ResNet-110", "Accuracy": "6.43% error",      # user-defined fields
- "quote": "ResNet-110 has 6.43% error", "page": 7,
- "found_page": 7, "match_score": 100.0, "status": "verified"}
+```bash
+python tests/test_verify.py
+python tests/test_extractor.py
+python tests/test_consistency.py
+python tests/test_summary.py
+python tests/test_numbers.py
+TEST_DATABASE_URL=postgres://... python tests/test_db.py   # needs a throwaway database
 ```
 
-### A. Extraction quality (core): owner: ______
-Files: `app/extractor.py`, `app/llm.py`
-- [x] Improved system prompt for multi-row extraction, exact quotes, no unit conversion
-- [ ] Run on 10 real papers and fix prompt failures (missed results, merged rows, wrong pages)
-- [x] Handle long papers: `select_relevant_pages` keeps abstract + results/experiments sections
-- [x] Make sure one paper → many rows works (prompt + tests for multi-result)
-- [x] Optional: `suggest_fields(topic)` helper
+## Limitations
 
-### B. Verification + inconsistency detector (our differentiator): owner: ______
-Files: `app/verify.py`, new `app/consistency.py`, `tests/`
-- [x] Tune `QUOTE_MATCH_THRESHOLD` (lowered to 85) + more robust number normalization
-- [x] Inconsistency detector: `detect_intra_paper_inconsistencies` (abstract vs. table)
-- [x] Cross-paper conflicts: `detect_cross_paper_conflicts`
-- [x] Add a test for each new rule (`tests/test_consistency.py`)
-- [x] Review fixes: JSON parsing with `[24]`-style citations in quotes; detector works with any field names (not just Model/Dataset); score uses the first number, not a random one
-- [ ] Long-paper filter keeps most pages on real reports (words like "results" are everywhere). C's vector search should replace it
+- **Numbers are verified exactly; text values** (e.g. a license name) are only checked for a real
+  quote. Open the source for those.
+- **Charts and figures** are skipped, and **scanned (image-only) PDFs** can't be read yet (no OCR).
+- A ✅ on a table row means the number is in that row of the paper; the column assignment is the
+  AI's, which is why the highlighted source is one click away.
 
-### C. Tiger Data (database + AI search): owner: ______ (cache + library built)
-Files: `app/db.py`, `schema.sql`, new `app/search.py`
-- [x] Cache of past extractions + saved-results library (tested on PostgreSQL 16)
-- [ ] Confirm on your Tiger instance: `python cli.py papers --fields x --check-db`
-- [ ] Store page chunks + embeddings (pgvector / Tiger AI features); for each field, retrieve the top chunks so long papers fit in the prompt
-- [ ] Leaderboard query: best result per model per dataset
-- [ ] Trend query by publication `year` (continuous aggregate) for the "progress over time" chart
-- [ ] Ask Tiger reps what counts as an "innovative use" for their prize
+## Built with
 
-### D. UI + demo: owner: ______ (base built: see streamlit_app.py)
-Files: `streamlit_app.py`
-- [x] Table with status icons, filters (status, paper, search), CSV download
-- [x] Click a row → quote panel + rendered PDF page with the quote highlighted
-- [x] Leaderboard tab + chart (in pandas for now; swap to C's SQL later)
-- [x] Table summary generated only from verified rows
-- [ ] Polish: app name/logo, empty states, test with 30 real papers
-
-### E. Data, pitch, Devpost: owner: ______ (prep done: see docs/)
-- [x] Test papers: 7 public AI technical reports in `papers/` (see `papers/SOURCES.md`), fields `Model, Benchmark, Score`
-- [ ] 5 papers from a non-CS field for the "works in any department" demo
-- [x] Answer key: `eval/gold.csv` (38 hand-checked rows) + `eval/score.py` to measure accuracy
-- [ ] Run the manual baseline timing (`docs/BASELINE_AND_VIDEO.md`) and the accuracy check, then fill in the numbers
-- [x] Pitch script + judge Q&A (`docs/PITCH.md`), Devpost draft (`docs/DEVPOST.md`), video shot list
-- [ ] Pick a project name; record the video; paste into Devpost
-- [x] Findings on real PDFs for A and B: `docs/NOTES_FOR_A_AND_B.md`
-
-## Timeline
-
-| When | Milestone |
-|---|---|
-| Sat by midnight | **Devpost draft created.** CLI works end to end on 10 papers (A, B basic) |
-| Sun ~4 AM | DB storing results, UI shows the table, 30+ papers run (C, D) |
-| Sun ~9 AM | Inconsistency detector + leaderboard + summary (B, C, D) |
-| Sun 12 PM | **Hard submission deadline.** Feature freeze |
-| Sun 12–1:45 PM | Demo rehearsal, Devpost polish, final edits by 1:45 PM |
-
-## Rules for the team
-- Don't commit `.env` (API keys / DB URL).
-- Commit often (judges look at the GitHub history).
-- If something blocks you for more than 30 min, flag it and cut scope; a working core beats half-built extras.
+Python · PyMuPDF · RapidFuzz · pandas · Streamlit · Tiger Cloud (PostgreSQL) · xAI Grok API
